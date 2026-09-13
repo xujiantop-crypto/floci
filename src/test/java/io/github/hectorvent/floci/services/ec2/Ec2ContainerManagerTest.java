@@ -39,6 +39,7 @@ import java.io.Closeable;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -201,6 +202,46 @@ class Ec2ContainerManagerTest {
         verify(metadataServer).registerContainer("172.17.0.4", "i-vpc-restored", instance);
         verify(metadataServer).unregisterContainer("172.17.0.2", instance);
         assertEquals("172.17.0.4", instance.getImdsSourceIp());
+    }
+
+    @Test
+    void restoreMetadataRegistrationUsesTheConfiguredSharedNetworkWithVpcAttached() {
+        ContainerLifecycleManager lifecycleManager = mock(ContainerLifecycleManager.class);
+        when(lifecycleManager.isContainerRunning(TEST_CONTAINER_ID)).thenReturn(true);
+
+        DockerClient dockerClient = mock(DockerClient.class);
+        InspectContainerCmd inspect = mock(InspectContainerCmd.class);
+        InspectContainerResponse response = sharedAndVpcInspectResponse(false);
+        when(dockerClient.inspectContainerCmd(TEST_CONTAINER_ID)).thenReturn(inspect);
+        when(inspect.exec()).thenReturn(response);
+
+        EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
+        when(config.services().dockerNetwork()).thenReturn(Optional.of("shared-floci"));
+        Ec2MetadataServer metadataServer = mock(Ec2MetadataServer.class);
+        Ec2ContainerManager manager = new Ec2ContainerManager(
+                mock(ContainerBuilder.class),
+                lifecycleManager,
+                mock(ContainerLogStreamer.class),
+                mock(ContainerDetector.class),
+                mock(DockerHostResolver.class),
+                dockerClient,
+                mock(PortAllocator.class),
+                config,
+                metadataServer,
+                mock(Ec2PortForwardManager.class),
+                mock(RegionResolver.class),
+                mock(ContainerNetworkReachability.class),
+                mock(VpcNetworkManager.class));
+
+        Instance instance = new Instance();
+        instance.setInstanceId("i-shared-restored");
+        instance.setDockerContainerId(TEST_CONTAINER_ID);
+        instance.setContainerBridgeIp("10.0.1.10");
+
+        assertTrue(manager.restoreMetadataRegistration(instance));
+
+        assertEquals("192.168.215.10", instance.getContainerBridgeIp());
+        verify(metadataServer).registerContainer("192.168.215.10", "i-shared-restored", instance);
     }
 
     @Test
@@ -818,7 +859,31 @@ class Ec2ContainerManagerTest {
                 "192.168.215.10",
                 Ec2ContainerManager.preferredMetadataSourceIp(Map.of(
                         "bridge", bridge,
-                        "custom-floci-network", floci)).orElseThrow());
+                        "custom-floci-network", floci),
+                        Optional.of("custom-floci-network")).orElseThrow());
+    }
+
+    @Test
+    void launchRegistersTheConfiguredSharedNetworkWhenVpcIsEnumeratedFirst() throws Exception {
+        Ec2ContainerManager.containerBridgeIpAttempts = 1;
+        Ec2ContainerManager.containerBridgeIpPollMillis = 1;
+        LaunchHarness harness = launchHarness();
+        when(harness.config.services().dockerNetwork()).thenReturn(Optional.of("shared-floci"));
+        when(harness.vpcNetworkManager.attach(
+                "us-west-2", "vpc-lease", "subnet-lease", TEST_CONTAINER_ID, "10.0.1.10"))
+                .thenReturn(Optional.of("floci-vpc-lease"));
+        InspectContainerCmd inspect = mock(InspectContainerCmd.class);
+        InspectContainerResponse response = sharedAndVpcInspectResponse(true);
+        when(harness.dockerClient.inspectContainerCmd(TEST_CONTAINER_ID)).thenReturn(inspect);
+        when(inspect.exec()).thenReturn(response);
+        harness.stubSuccessfulExecs(new CountDownLatch(0), new CountDownLatch(0));
+        Instance instance = leasedInstance("i-shared-launch");
+
+        harness.manager.launch(instance, "ubuntu:24.04", null, "us-west-2");
+
+        awaitUntil(() -> "running".equals(instance.getState().getName()), Duration.ofSeconds(2));
+        verify(harness.metadataServer)
+                .registerContainer("192.168.215.10", "i-shared-launch", instance);
     }
 
     @Test
@@ -828,14 +893,16 @@ class Ec2ContainerManagerTest {
 
         assertEquals(
                 "172.17.0.8",
-                Ec2ContainerManager.preferredMetadataSourceIp(Map.of("bridge", bridge)).orElseThrow());
+                Ec2ContainerManager.preferredMetadataSourceIp(
+                        Map.of("bridge", bridge), Optional.empty()).orElseThrow());
     }
 
     @Test
     void preferredMetadataSourceIpIsEmptyWithoutUsableAddress() {
         ContainerNetwork bridge = new ContainerNetwork();
 
-        assertTrue(Ec2ContainerManager.preferredMetadataSourceIp(Map.of("bridge", bridge)).isEmpty());
+        assertTrue(Ec2ContainerManager.preferredMetadataSourceIp(
+                Map.of("bridge", bridge), Optional.empty()).isEmpty());
     }
 
     @Test
@@ -1523,6 +1590,23 @@ class Ec2ContainerManagerTest {
             ContainerNetwork bridge = new ContainerNetwork().withIpv4Address(ipAddress);
             when(networkSettings.getNetworks()).thenReturn(Map.of("bridge", bridge));
         }
+        return inspect;
+    }
+
+    private static InspectContainerResponse sharedAndVpcInspectResponse(boolean vpcFirst) {
+        InspectContainerResponse inspect = mock(InspectContainerResponse.class);
+        NetworkSettings networkSettings = mock(NetworkSettings.class);
+        when(inspect.getNetworkSettings()).thenReturn(networkSettings);
+        Map<String, ContainerNetwork> networks = new LinkedHashMap<>();
+        if (vpcFirst) {
+            networks.put("floci-vpc-lease", new ContainerNetwork().withIpv4Address("10.0.1.10"));
+        }
+        networks.put("shared-floci", new ContainerNetwork().withIpv4Address("192.168.215.10"));
+        if (!vpcFirst) {
+            networks.put("floci-vpc-lease", new ContainerNetwork().withIpv4Address("10.0.1.10"));
+        }
+        networks.put("bridge", new ContainerNetwork().withIpv4Address("172.17.0.8"));
+        when(networkSettings.getNetworks()).thenReturn(networks);
         return inspect;
     }
 

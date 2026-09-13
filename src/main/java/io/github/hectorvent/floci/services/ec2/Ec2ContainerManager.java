@@ -1815,7 +1815,8 @@ public class Ec2ContainerManager {
             if (inspect.getNetworkSettings() != null) {
                 var networks = inspect.getNetworkSettings().getNetworks();
                 if (networks != null) {
-                    Optional<String> preferredIp = preferredMetadataSourceIp(networks);
+                    Optional<String> preferredIp = preferredMetadataSourceIp(
+                            networks, config.services().dockerNetwork());
                     if (preferredIp.isPresent()) {
                         return preferredIp.get();
                     }
@@ -1851,18 +1852,27 @@ public class Ec2ContainerManager {
         return null;
     }
 
-    static Optional<String> preferredMetadataSourceIp(Map<String, ContainerNetwork> networks) {
+    static Optional<String> preferredMetadataSourceIp(
+            Map<String, ContainerNetwork> networks,
+            Optional<String> configuredNetwork) {
         if (networks == null || networks.isEmpty()) {
             return Optional.empty();
         }
-        Optional<String> configuredNetworkIp = networks.entrySet().stream()
+        Optional<String> configuredNetworkIp = configuredNetwork
+                .map(networks::get)
+                .map(ContainerNetwork::getIpAddress)
+                .filter(ip -> !ip.isBlank());
+        if (configuredNetworkIp.isPresent()) {
+            return configuredNetworkIp;
+        }
+        Optional<String> nonBridgeNetworkIp = networks.entrySet().stream()
                 .filter(entry -> !"bridge".equals(entry.getKey()))
                 .map(Map.Entry::getValue)
                 .map(ContainerNetwork::getIpAddress)
                 .filter(ip -> ip != null && !ip.isBlank())
                 .findFirst();
-        if (configuredNetworkIp.isPresent()) {
-            return configuredNetworkIp;
+        if (nonBridgeNetworkIp.isPresent()) {
+            return nonBridgeNetworkIp;
         }
         ContainerNetwork bridge = networks.get("bridge");
         if (bridge != null && bridge.getIpAddress() != null && !bridge.getIpAddress().isBlank()) {
