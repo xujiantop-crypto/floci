@@ -2652,9 +2652,13 @@ public class S3Controller {
                 .start("CopyObjectResult", AwsNamespaces.S3)
                 .elem("LastModified", ISO_FORMAT.format(copy.getLastModified()))
                 .elem("ETag", copy.getETag());
+        xmlBuilder.elem("VersionId", copy.getVersionId());
         appendChecksumElements(xmlBuilder, copy.getChecksum());
         String xml = xmlBuilder.end("CopyObjectResult").build();
         Response.ResponseBuilder response = Response.ok(xml).type(MediaType.APPLICATION_XML);
+        if (copy.getVersionId() != null) {
+            response.header("x-amz-version-id", copy.getVersionId());
+        }
         if (copy.getServerSideEncryption() != null) {
             response.header("x-amz-server-side-encryption", copy.getServerSideEncryption());
         }

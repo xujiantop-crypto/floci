@@ -1561,7 +1561,7 @@ public class S3Service implements Resettable, ResourceProvider {
 
     public S3Object copyObject(String sourceBucket, String sourceKey,
                                String destBucket, String destKey, String versionId) {
-        return copyObject(sourceBucket, sourceKey, destBucket, destKey, null, new CopyObjectOptions());
+        return copyObject(sourceBucket, sourceKey, destBucket, destKey, versionId, new CopyObjectOptions());
     }
 
     public S3Object copyObject(String sourceBucket, String sourceKey,

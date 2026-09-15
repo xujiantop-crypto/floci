@@ -78,13 +78,19 @@ class S3CopyObjectVersionedIntegrationTest {
     @Test
     @Order(6)
     void copyObjectFromV1RestoresV1AsLatest() {
-        given()
+        var response = given()
                 .header("x-amz-copy-source", "/" + BUCKET + "/key?versionId=" + v1VersionId)
                 .when()
                 .put("/" + BUCKET + "/key")
                 .then()
                 .statusCode(200)
-                .body(containsString("CopyObjectResult"));
+                .body(containsString("CopyObjectResult"))
+                .header("x-amz-version-id", notNullValue())
+                .extract();
+
+        String destinationVersionId = response.header("x-amz-version-id");
+        org.hamcrest.MatcherAssert.assertThat(response.body().asString(),
+                containsString("<VersionId>" + destinationVersionId + "</VersionId>"));
 
         given()
                 .when()
