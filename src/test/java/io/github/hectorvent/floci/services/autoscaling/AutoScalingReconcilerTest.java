@@ -20,6 +20,7 @@ import io.github.hectorvent.floci.services.ssm.SsmCommandService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -36,6 +37,29 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AutoScalingReconcilerTest {
+
+    @Test
+    void accountReadFailureDoesNotPreventLaterAccountsFromReconciling() {
+        AutoScalingService asgService = mock(AutoScalingService.class);
+        Ec2Service ec2Service = mock(Ec2Service.class);
+        AutoScalingReconciler reconciler = new AutoScalingReconciler(
+                asgService, ec2Service, mock(ElbV2Service.class));
+        AutoScalingGroup otherAccountGroup = new AutoScalingGroup();
+        otherAccountGroup.setRegion("us-east-1");
+        otherAccountGroup.setAutoScalingGroupName("other-account-asg");
+        otherAccountGroup.setDesiredCapacity(0);
+
+        when(asgService.reconcilableAccountIds()).thenReturn(new LinkedHashSet<>(List.of(
+                "000000000000", "222222222222")));
+        when(asgService.describeAutoScalingGroups(null, null))
+                .thenThrow(new IllegalStateException("default account unavailable"))
+                .thenReturn(List.of(otherAccountGroup));
+
+        reconciler.reconcileAll();
+
+        verify(asgService).saveAutoScalingGroup(otherAccountGroup);
+        verify(asgService).completeInstanceRefreshIfSettled("us-east-1", "other-account-asg");
+    }
 
     @Test
     void pendingInstancesCountAsActiveCapacity() {

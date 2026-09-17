@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import io.github.hectorvent.floci.core.common.AwsArnUtils;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.RegionResolver;
+import io.github.hectorvent.floci.core.storage.AccountAwareStorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageBackedMap;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.autoscaling.model.*;
@@ -13,6 +14,7 @@ import io.github.hectorvent.floci.services.ec2.model.LaunchTemplate;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import java.time.Instant;
 import java.util.*;
@@ -22,6 +24,8 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class AutoScalingService {
+
+    private static final Logger LOG = Logger.getLogger(AutoScalingService.class);
 
     static final String MISSING_LAUNCH_TEMPLATE_IMAGE_ID_MESSAGE =
             "You must use a valid fully-formed launch template. The request must contain the parameter ImageId";
@@ -62,6 +66,7 @@ public class AutoScalingService {
 
     // region :: name → resource
     private Map<String, LaunchConfiguration> launchConfigs = new ConcurrentHashMap<>();
+    private AccountAwareStorageBackend<AutoScalingGroup> groupsStore;
     private Map<String, AutoScalingGroup> groups = new ConcurrentHashMap<>();
     private Map<String, LifecycleHook> hooks = new ConcurrentHashMap<>();
     private Map<String, ScalingPolicy> policies = new ConcurrentHashMap<>();
@@ -77,7 +82,9 @@ public class AutoScalingService {
             return;
         }
         this.launchConfigs = storageBacked("autoscaling-launch-configurations.json", new TypeReference<Map<String, LaunchConfiguration>>() {});
-        this.groups = storageBacked("autoscaling-groups.json", new TypeReference<Map<String, AutoScalingGroup>>() {});
+        this.groupsStore = storageFactory.create("autoscaling", "autoscaling-groups.json",
+                new TypeReference<Map<String, AutoScalingGroup>>() {});
+        this.groups = new StorageBackedMap<>(this.groupsStore);
         this.hooks = storageBacked("autoscaling-lifecycle-hooks.json", new TypeReference<Map<String, LifecycleHook>>() {});
         this.policies = storageBacked("autoscaling-policies.json", new TypeReference<Map<String, ScalingPolicy>>() {});
         this.activities = storageBacked("autoscaling-activities.json", new TypeReference<Map<String, ScalingActivity>>() {});
@@ -89,6 +96,24 @@ public class AutoScalingService {
     private <V> Map<String, V> storageBacked(String fileName, TypeReference<Map<String, V>> typeReference)
     {
         return new StorageBackedMap<>(storageFactory.create("autoscaling", fileName, typeReference));
+    }
+
+    Set<String> reconcilableAccountIds() {
+        Set<String> accountIds = new LinkedHashSet<>();
+        if (regionResolver != null && regionResolver.getDefaultAccountId() != null) {
+            accountIds.add(regionResolver.getDefaultAccountId());
+        }
+        if (groupsStore != null) {
+            try {
+                for (AccountAwareStorageBackend.AccountEntry<AutoScalingGroup> entry
+                        : groupsStore.scanAllAccountEntries(key -> true)) {
+                    accountIds.add(entry.accountId());
+                }
+            } catch (Exception e) {
+                LOG.warnv(e, "Could not enumerate Auto Scaling group accounts: {0}", e.getMessage());
+            }
+        }
+        return accountIds;
     }
 
     // ── Launch Configurations ──────────────────────────────────────────────────
