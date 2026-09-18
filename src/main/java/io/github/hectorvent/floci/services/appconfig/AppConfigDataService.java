@@ -1,16 +1,21 @@
 package io.github.hectorvent.floci.services.appconfig;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.storage.StorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.appconfig.model.ConfigurationSession;
+import io.github.hectorvent.floci.services.appconfig.model.ConfigurationProfile;
 import io.github.hectorvent.floci.services.appconfig.model.HostedConfigurationVersion;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
 import java.math.BigDecimal;
+import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
 
@@ -20,11 +25,14 @@ public class AppConfigDataService {
 
     private final StorageBackend<String, ConfigurationSession> sessionStore;
     private final AppConfigService appConfigService;
+    private final ObjectMapper objectMapper;
 
     @Inject
-    public AppConfigDataService(StorageFactory storageFactory, AppConfigService appConfigService) {
+    public AppConfigDataService(StorageFactory storageFactory, AppConfigService appConfigService,
+                                ObjectMapper objectMapper) {
         this.sessionStore = storageFactory.create("appconfigdata", "appconfigdata-sessions.json", new TypeReference<>() {});
         this.appConfigService = appConfigService;
+        this.objectMapper = objectMapper;
     }
 
     public String startConfigurationSession(Map<String, Object> request) {
@@ -95,12 +103,61 @@ public class AppConfigDataService {
         sessionStore.delete(token); // Old token is invalid
         sessionStore.put(nextToken, session);
 
-        byte[] content = (version != null) ? version.getContent() : new byte[0];
+        byte[] content = (version != null) ? resolveContent(session, version) : new byte[0];
         String contentType = (version != null) ? version.getContentType() : "application/octet-stream";
         String versionLabel = (version != null) ? String.valueOf(version.getVersionNumber()) : "";
 
         return new ConfigurationData(content, contentType, versionLabel, nextToken,
                 pollInterval);
+    }
+
+    private byte[] resolveContent(ConfigurationSession session, HostedConfigurationVersion version) {
+        ConfigurationProfile profile = appConfigService.getConfigurationProfile(
+                session.getApplicationId(), session.getConfigurationProfileId());
+        if (!"AWS.AppConfig.FeatureFlags".equals(profile.getType())) {
+            return version.getContent();
+        }
+        return transformFeatureFlags(version.getContent(), objectMapper);
+    }
+
+    static byte[] transformFeatureFlags(byte[] content, ObjectMapper objectMapper) {
+        try {
+            JsonNode document = objectMapper.readTree(content);
+            JsonNode values = document == null ? null : document.get("values");
+            if (values == null || !values.isObject()) {
+                return content;
+            }
+
+            ObjectNode retrieval = objectMapper.createObjectNode();
+            var fields = values.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                JsonNode definition = entry.getValue();
+                JsonNode enabled = definition.get("enabled");
+                if (!definition.isObject() || enabled == null || !enabled.isBoolean()
+                        || definition.has("_variants")) {
+                    // Multi-variant profiles use Amazon Ion at retrieval time. Do not emit a
+                    // partially converted JSON document for a format this service does not yet
+                    // evaluate.
+                    return content;
+                }
+
+                if (!enabled.booleanValue()) {
+                    retrieval.putObject(entry.getKey()).put("enabled", false);
+                    continue;
+                }
+
+                ObjectNode flag = (ObjectNode) definition.deepCopy();
+                flag.remove("_createdAt");
+                flag.remove("_updatedAt");
+                retrieval.set(entry.getKey(), flag);
+            }
+            return objectMapper.writeValueAsBytes(retrieval);
+        } catch (IOException | RuntimeException e) {
+            // Hosted versions are stored as opaque bytes. Preserve that behavior for malformed
+            // legacy content instead of turning a data-plane poll into an unexpected 500.
+            return content;
+        }
     }
 
     static int normalizePollInterval(int interval) {
