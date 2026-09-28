@@ -22,6 +22,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
 
 /**
@@ -54,8 +55,9 @@ class EcsTaskMetadataIntegrationTest {
                         ? Optional.of(new EcsService.MetadataTarget(task,
                                 task.getContainers().getFirst(), taskDefinition()))
                         : Optional.empty());
-        when(containerManager.sampleContainerStats(anyString())).thenReturn(Optional.empty());
-        when(containerManager.sampleContainerStats(anyList())).thenReturn(Map.of());
+        // The shared manager may also be called by the background ECS reconciler.
+        doReturn(Optional.empty()).when(containerManager).sampleContainerStats(anyString());
+        doReturn(Map.of()).when(containerManager).sampleContainerStats(anyList());
     }
 
     @Test
