@@ -3,9 +3,9 @@ package io.github.hectorvent.floci.services.cloudformation;
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.github.hectorvent.floci.core.storage.PersistentStorage;
 import io.github.hectorvent.floci.services.cloudformation.model.Stack;
+import io.github.hectorvent.floci.testing.PersistentStorageProfile;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -26,10 +26,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * directly with a fresh {@link PersistentStorage} (what the service would read on the next boot).
  */
 @QuarkusTest
-@TestProfile(CloudFormationPersistenceIntegrationTest.PersistentStorageProfile.class)
+@TestProfile(PersistentStorageProfile.class)
 class CloudFormationPersistenceIntegrationTest {
 
-    static final String STORAGE_DIR = "target/cfn-persistence-it";
+    static final String STORAGE_DIR = PersistentStorageProfile.STORAGE_DIR;
     private static final Path STACKS_FILE = Path.of(STORAGE_DIR, "cloudformation-stacks.json");
 
     @BeforeAll
@@ -85,14 +85,5 @@ class CloudFormationPersistenceIntegrationTest {
                 "Persisted stack must retain its resources");
         assertEquals("cfn-persist-it-bucket",
                 loaded.get().getResources().get("PersistBucket").getPhysicalId());
-    }
-
-    public static final class PersistentStorageProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of(
-                    "floci.storage.mode", "persistent",
-                    "floci.storage.persistent-path", STORAGE_DIR);
-        }
     }
 }

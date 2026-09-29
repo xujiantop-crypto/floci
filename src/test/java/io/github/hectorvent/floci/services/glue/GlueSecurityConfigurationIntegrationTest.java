@@ -3,9 +3,9 @@ package io.github.hectorvent.floci.services.glue;
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.github.hectorvent.floci.core.storage.PersistentStorage;
 import io.github.hectorvent.floci.services.glue.model.SecurityConfiguration;
+import io.github.hectorvent.floci.testing.PersistentStorageProfile;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -24,11 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @QuarkusTest
-@TestProfile(GlueSecurityConfigurationIntegrationTest.PersistentStorageProfile.class)
+@TestProfile(PersistentStorageProfile.class)
 class GlueSecurityConfigurationIntegrationTest {
 
     private static final String CONTENT_TYPE = "application/x-amz-json-1.1";
-    private static final String STORAGE_DIR = "target/glue-security-configuration-it";
+    private static final String STORAGE_DIR = PersistentStorageProfile.STORAGE_DIR;
     private static final Path STORAGE_FILE = Path.of(STORAGE_DIR, "security_configurations.json");
     private static final String NAME = "security-" + UUID.randomUUID().toString().substring(0, 8);
     private static final String ENCRYPTION = """
@@ -145,14 +145,5 @@ class GlueSecurityConfigurationIntegrationTest {
     private static String authorization(String account, String region) {
         return "AWS4-HMAC-SHA256 Credential=" + account
                 + "/20260918/" + region + "/glue/aws4_request, SignedHeaders=host, Signature=abc";
-    }
-
-    public static final class PersistentStorageProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of(
-                    "floci.storage.mode", "persistent",
-                    "floci.storage.persistent-path", STORAGE_DIR);
-        }
     }
 }

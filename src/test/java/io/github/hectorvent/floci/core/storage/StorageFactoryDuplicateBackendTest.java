@@ -1,8 +1,8 @@
 package io.github.hectorvent.floci.core.storage;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import io.github.hectorvent.floci.testing.SelectivePersistentStorageProfile;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,10 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * clobbers the persisted state written by the active instance.
  */
 @QuarkusTest
-@TestProfile(StorageFactoryDuplicateBackendTest.PersistentProfile.class)
+@TestProfile(SelectivePersistentStorageProfile.class)
 class StorageFactoryDuplicateBackendTest {
 
-    private static final String STORAGE_PATH = "/tmp/floci-dedupe-backend-test";
+    private static final String STORAGE_PATH = SelectivePersistentStorageProfile.STORAGE_DIR;
     private static final String FILE_NAME = "dynamodb-tables.json";
 
     @Inject
@@ -64,16 +64,5 @@ class StorageFactoryDuplicateBackendTest {
 
         assertEquals(60, reader.keys().size(),
                 "persisted table definitions should survive flushAll despite the duplicate backend");
-    }
-
-    public static final class PersistentProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of(
-                    "floci.storage.mode", "memory",
-                    "floci.storage.services.dynamodb.mode", "persistent",
-                    "floci.storage.persistent-path", STORAGE_PATH
-            );
-        }
     }
 }

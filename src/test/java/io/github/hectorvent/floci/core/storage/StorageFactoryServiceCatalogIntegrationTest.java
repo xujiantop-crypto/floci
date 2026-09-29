@@ -1,8 +1,8 @@
 package io.github.hectorvent.floci.core.storage;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import io.github.hectorvent.floci.testing.SelectivePersistentStorageProfile;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @QuarkusTest
-@TestProfile(StorageFactoryServiceCatalogIntegrationTest.AcmPersistentStorageProfile.class)
+@TestProfile(SelectivePersistentStorageProfile.class)
 class StorageFactoryServiceCatalogIntegrationTest {
 
     @Inject
@@ -28,16 +28,5 @@ class StorageFactoryServiceCatalogIntegrationTest {
         );
 
         assertInstanceOf(AccountAwareStorageBackend.class, backend);
-    }
-
-    public static final class AcmPersistentStorageProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of(
-                    "floci.storage.mode", "memory",
-                    "floci.storage.services.acm.mode", "persistent",
-                    "floci.storage.persistent-path", "/tmp/floci-service-registry-unification-tests"
-            );
-        }
     }
 }

@@ -2,9 +2,9 @@ package io.github.hectorvent.floci.services.athena;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.github.hectorvent.floci.core.storage.PersistentStorage;
+import io.github.hectorvent.floci.testing.PersistentStorageProfile;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -22,10 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @QuarkusTest
-@TestProfile(AthenaCreateWorkGroupPersistenceIntegrationTest.PersistentStorageProfile.class)
+@TestProfile(PersistentStorageProfile.class)
 class AthenaCreateWorkGroupPersistenceIntegrationTest {
 
-    static final String STORAGE_DIR = "target/athena-workgroups-it";
+    static final String STORAGE_DIR = PersistentStorageProfile.STORAGE_DIR;
     private static final Path WORKGROUPS_FILE = Path.of(STORAGE_DIR, "workgroups.json");
     private static final String CONTENT_TYPE = "application/x-amz-json-1.1";
 
@@ -346,15 +346,5 @@ class AthenaCreateWorkGroupPersistenceIntegrationTest {
         assertEquals(true, configuration.get("EnforceWorkGroupConfiguration"));
         assertEquals(true, configuration.get("PublishCloudWatchMetricsEnabled"));
         assertNull(configuration.get("BytesScannedCutoffPerQuery"));
-    }
-
-    public static final class PersistentStorageProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            return Map.of(
-                    "floci.storage.mode", "persistent",
-                    "floci.storage.persistent-path", STORAGE_DIR
-            );
-        }
     }
 }
