@@ -25,7 +25,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -434,7 +433,7 @@ class SesCfnProvisionerTest {
     }
 
     @Test
-    void exhaustedStackDeleteKeepsEveryOwedIdentityForRetry() throws Exception {
+    void exhaustedStackDeleteAbandonsEveryExhaustedIdentity() throws Exception {
         StackResource resource = resource();
         resource.setPhysicalId("current.example.com");
         resource.setUpdateReplacePolicy("Retain");
@@ -454,26 +453,66 @@ class SesCfnProvisionerTest {
         }
         provisioner.clearDeleteCleanup(resource);
 
-        assertTrue(provisioner.hasReplacementUpdate(resource));
-        assertEquals("orphan-one.example.com", provisioner.updateCleanupPhysicalId(resource));
-        assertThrows(AwsException.class, () -> provisioner.delete(resource, "us-east-1"));
+        assertFalse(provisioner.hasReplacementUpdate(resource));
+        assertNull(provisioner.updateCleanupPhysicalId(resource));
+        assertFalse(provisioner.completeDeleteCleanup(resource).applicable());
         assertTrue(provisioner.retainsFailedUpdateState(resource));
-        verify(ses, never()).deleteIdentity("current.example.com", "us-east-1");
-
-        doNothing().when(ses).deleteIdentity("orphan-one.example.com", "us-east-1");
-        UpdateCleanupResult partlyRecovered = provisioner.completeDeleteCleanup(resource);
-        assertFalse(partlyRecovered.complete());
-        assertTrue(partlyRecovered.attempts() > 3);
-        assertEquals("orphan-two.example.com", partlyRecovered.previousPhysicalId());
-        assertEquals("orphan-two.example.com", provisioner.updateCleanupPhysicalId(resource));
-        provisioner.clearDeleteCleanup(resource);
-        assertTrue(provisioner.hasReplacementUpdate(resource));
-
-        doNothing().when(ses).deleteIdentity("orphan-two.example.com", "us-east-1");
         provisioner.delete(resource, "us-east-1");
         assertFalse(provisioner.hasReplacementUpdate(resource));
         assertFalse(provisioner.retainsFailedUpdateState(resource));
+        verify(ses, times(3)).deleteIdentity("orphan-one.example.com", "us-east-1");
+        verify(ses, times(3)).deleteIdentity("orphan-two.example.com", "us-east-1");
         verify(ses, times(1)).deleteIdentity("current.example.com", "us-east-1");
+    }
+
+    @Test
+    void stackDeleteDoesNotRetryAnAlreadyExhaustedIdentity() throws Exception {
+        StackResource resource = resource();
+        resource.setPhysicalId("current.example.com");
+        ReplacementCleanup.recordOrphan(resource, "reused.example.com", resource.getResourceType(), "us-east-1");
+        for (int attempt = 0; attempt < 3; attempt++) {
+            ReplacementCleanup.complete(resource, (type, id, region) -> {
+                throw new IllegalStateException("historical delete unavailable");
+            });
+        }
+
+        UpdateCleanupResult exhausted = provisioner.completeDeleteCleanup(resource);
+        assertFalse(exhausted.complete());
+        assertEquals(3, exhausted.attempts());
+        assertThrows(AwsException.class, () -> provisioner.delete(resource, "us-east-1"));
+        verify(ses, never()).deleteIdentity("reused.example.com", "us-east-1");
+        verify(ses, never()).deleteIdentity("current.example.com", "us-east-1");
+
+        provisioner.clearDeleteCleanup(resource);
+        provisioner.delete(resource, "us-east-1");
+        verify(ses, never()).deleteIdentity("reused.example.com", "us-east-1");
+        verify(ses).deleteIdentity("current.example.com", "us-east-1");
+    }
+
+    @Test
+    void stackDeleteKeepsCleanupEntriesWithAttemptsLeft() throws Exception {
+        StackResource resource = resource();
+        resource.setPhysicalId("current.example.com");
+        resource.setUpdateReplacePolicy("Retain");
+        resource.getAttributes().put("__FlociSesUpdateSnapshot", "{\"managedTags\":\"[]\"}");
+        ReplacementCleanup.recordOrphan(resource, "exhausted.example.com", resource.getResourceType(), "us-east-1");
+        for (int attempt = 0; attempt < 3; attempt++) {
+            ReplacementCleanup.complete(resource, (type, id, region) -> {
+                throw new IllegalStateException("historical delete unavailable");
+            });
+        }
+        ReplacementCleanup.recordOrphan(resource, "pending.example.com", resource.getResourceType(), "us-east-1");
+
+        provisioner.clearDeleteCleanup(resource);
+        assertTrue(provisioner.hasReplacementUpdate(resource));
+        assertEquals("pending.example.com", provisioner.updateCleanupPhysicalId(resource));
+        assertTrue(provisioner.retainsFailedUpdateState(resource));
+        assertTrue(provisioner.completeDeleteCleanup(resource).complete());
+        verify(ses).deleteIdentity("pending.example.com", "us-east-1");
+        verify(ses, never()).deleteIdentity("exhausted.example.com", "us-east-1");
+        provisioner.delete(resource, "us-east-1");
+        verify(ses).deleteIdentity("current.example.com", "us-east-1");
+        assertFalse(provisioner.retainsFailedUpdateState(resource));
     }
 
     @Test

@@ -725,7 +725,7 @@ class CloudFormationSesEmailIdentityIntegrationTest {
     }
 
     @Test
-    void stackDeletionDoesNotForgetFailedReplacementAfterCleanupExhaustion() throws Exception {
+    void stackDeletionAbandonsFailedReplacementAfterCleanupExhaustion() throws Exception {
         String original = "ses-" + Long.toString(System.nanoTime(), 36) + ".example.com";
         String replacement = "replacement-" + original;
         stack = "cfn-ses-" + Long.toString(System.nanoTime(), 36);
@@ -742,35 +742,95 @@ class CloudFormationSesEmailIdentityIntegrationTest {
             doCallRealMethod().when(identityService).getIdentityVerificationAttributes(replacement, "us-east-1");
             assertEquals(200, sesIdentity(original).statusCode());
             assertEquals(200, sesIdentity(replacement).statusCode());
+            clearInvocations(sesService);
 
             cfn("DeleteStack", null).then().statusCode(200);
             awaitStatus("DELETE_FAILED");
+            assertEquals(404, sesIdentity(original).statusCode());
             assertEquals(200, sesIdentity(replacement).statusCode());
+            verify(sesService, times(3)).deleteIdentity(replacement, "us-east-1");
 
             cfn("DeleteStack", null).then().statusCode(200);
-            Response retried = await().atMost(Duration.ofSeconds(15)).until(
-                    () -> cfn("DescribeStacks", null),
-                    response -> response.statusCode() == 400
-                            || "DELETE_FAILED".equals(XmlParser.extractFirst(response.asString(), "StackStatus", null)));
-            assertEquals(200, retried.statusCode(),
-                    "DeleteStack must not forget an identity whose deletion is still failing");
-            assertEquals("DELETE_FAILED", XmlParser.extractFirst(retried.asString(), "StackStatus", null));
-            assertEquals(200, sesIdentity(original).statusCode());
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                    assertEquals(400, cfn("DescribeStacks", null).statusCode()));
             assertEquals(200, sesIdentity(replacement).statusCode());
-
-            doCallRealMethod().when(sesService).deleteIdentity(replacement, "us-east-1");
-            cfn("DeleteStack", null).then().statusCode(200);
-            await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
-                assertEquals(400, cfn("DescribeStacks", null).statusCode());
-                assertEquals(404, sesIdentity(original).statusCode());
-                assertEquals(404, sesIdentity(replacement).statusCode());
-            });
+            verify(sesService, times(3)).deleteIdentity(replacement, "us-east-1");
             stack = null;
         } finally {
             doCallRealMethod().when(identityService).getIdentityVerificationAttributes(replacement, "us-east-1");
             doCallRealMethod().when(sesService).deleteIdentity(replacement, "us-east-1");
             given().header("Authorization", SES_AUTH)
                     .delete("/v2/email/identities/{identity}", replacement).then().statusCode(anyOf(is(200), is(404)));
+        }
+    }
+
+    @Test
+    void deletionRetryPreservesAnotherStacksIdentityAtAnExhaustedOrphanAddress() throws Exception {
+        String original = "ses-" + Long.toString(System.nanoTime(), 36) + ".example.com";
+        String replacement = "replacement-" + original;
+        stack = "cfn-ses-history-" + Long.toString(System.nanoTime(), 36);
+        String originalStack = stack;
+        String adoptingStack = "cfn-ses-adopting-" + Long.toString(System.nanoTime(), 36);
+        cfn("CreateStack", template(original, false)).then().statusCode(200);
+        awaitStatus("CREATE_COMPLETE");
+        doThrow(new AwsException("ServiceUnavailableException", "temporary read failure", 503))
+                .when(identityService).getIdentityVerificationAttributes(replacement, "us-east-1");
+        doThrow(new AwsException("ServiceUnavailableException", "delete unavailable", 503))
+                .when(sesService).deleteIdentity(replacement, "us-east-1");
+
+        try {
+            cfn("UpdateStack", template(replacement, false)).then().statusCode(200);
+            awaitStatus("UPDATE_ROLLBACK_COMPLETE");
+            doCallRealMethod().when(identityService).getIdentityVerificationAttributes(replacement, "us-east-1");
+            assertEquals(200, sesIdentity(replacement).statusCode());
+            cfn("DeleteStack", null).then().statusCode(200);
+            awaitStatus("DELETE_FAILED");
+            assertEquals(200, sesIdentity(replacement).statusCode());
+
+            doCallRealMethod().when(sesService).deleteIdentity(replacement, "us-east-1");
+            given().header("Authorization", SES_AUTH)
+                    .delete("/v2/email/identities/{identity}", replacement).then().statusCode(200);
+            sesIdentity(replacement).then().statusCode(404);
+
+            stack = adoptingStack;
+            cfn("CreateStack", template(replacement, true)).then().statusCode(200);
+            String adopted = awaitStatus("CREATE_COMPLETE");
+            assertEquals(replacement, XmlParser.extractPairs(adopted,
+                    "Outputs", "OutputKey", "OutputValue").get("IdentityRef"));
+            Response claimed = sesIdentity(replacement);
+            claimed.then().statusCode(200);
+            List<String> adoptedTokens = claimed.jsonPath().getList("DkimAttributes.Tokens", String.class);
+            assertEquals("new", claimed.jsonPath().getString("Tags.find { it.Key == 'purpose' }.Value"));
+            clearInvocations(sesService);
+
+            stack = originalStack;
+            cfn("DeleteStack", null).then().statusCode(200);
+            await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                    assertEquals(400, cfn("DescribeStacks", null).statusCode()));
+            assertEquals(404, sesIdentity(original).statusCode());
+            stack = adoptingStack;
+            Response stillClaimed = cfn("DescribeStacks", null);
+            stillClaimed.then().statusCode(200);
+            assertEquals("CREATE_COMPLETE", XmlParser.extractFirst(stillClaimed.asString(), "StackStatus", null));
+            Response remaining = sesIdentity(replacement);
+            assertEquals(200, remaining.statusCode(),
+                    "An exhausted cleanup must not delete Stack B's replacement identity: " + remaining.asString());
+            assertEquals(adoptedTokens, remaining.jsonPath().getList("DkimAttributes.Tokens", String.class));
+            verify(sesService, never()).deleteIdentity(replacement, "us-east-1");
+        } finally {
+            doCallRealMethod().when(identityService).getIdentityVerificationAttributes(replacement, "us-east-1");
+            doCallRealMethod().when(sesService).deleteIdentity(replacement, "us-east-1");
+            for (String ownedStack : List.of(adoptingStack, originalStack)) {
+                stack = ownedStack;
+                if (cfn("DescribeStacks", null).statusCode() == 200) {
+                    cfn("DeleteStack", null).then().statusCode(200);
+                    await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                            assertEquals(400, cfn("DescribeStacks", null).statusCode()));
+                }
+            }
+            sesIdentity(original).then().statusCode(404);
+            sesIdentity(replacement).then().statusCode(404);
+            stack = null;
         }
     }
 
