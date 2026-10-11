@@ -1755,6 +1755,7 @@ public class ApiGatewayExecuteController {
         Response serviceResponse;
         String errorType = null;
         String errorMessage = null;
+        int serviceStatus = 500;
         try {
             if ("lambda".equals(target.service())) {
                 String functionName = functionNameFromUri(integration.getUri());
@@ -1796,6 +1797,7 @@ public class ApiGatewayExecuteController {
         } catch (AwsException e) {
             errorType = e.getErrorCode();
             errorMessage = e.getMessage();
+            serviceStatus = e.getHttpStatus();
             serviceResponse = null;
         } catch (Exception e) {
             errorType = "InternalError";
@@ -1805,7 +1807,6 @@ public class ApiGatewayExecuteController {
 
         // Build response body string
         String responseBodyStr;
-        int serviceStatus;
         if (serviceResponse != null) {
             serviceStatus = serviceResponse.getStatus();
             Object entity = serviceResponse.getEntity();
@@ -1836,19 +1837,18 @@ public class ApiGatewayExecuteController {
                 }
             }
         } else {
-            serviceStatus = 500;
             responseBodyStr = String.format("{\"errorMessage\":\"%s\",\"errorType\":\"%s\"}",
                     errorMessage != null ? errorMessage.replace("\"", "\\\"") : "Unknown error",
                     errorType != null ? errorType : "UnknownError");
         }
 
-        // AWS matches selectionPattern against the error response body/message for AWS/Lambda
-        // integrations. We match against both errorType and errorMessage to catch patterns like
-        // ".*ResourceNotFoundException.*". (HTTP integrations match the status code instead —
-        // see invokeHttpIntegration.)
+        // Lambda integrations select by their error type/message; other AWS integrations select
+        // by the backend HTTP status code, as HTTP integrations do.
         String errorMatchString = errorType != null
                 ? errorType + (errorMessage != null ? ": " + errorMessage : "")
                 : errorMessage;
+        String selectionMatchString = "lambda".equals(target.service())
+                ? errorMatchString : String.valueOf(serviceStatus);
 
         // Case-insensitive: an integration.response.header.X-Foo mapping must resolve regardless of
         // the casing the backend or client library used for the header name.
@@ -1865,7 +1865,7 @@ public class ApiGatewayExecuteController {
                 vtlAuthorizerContext, httpRequestMappingContext(scope, requestId, authorizerResult));
 
         int fallbackStatus = errorType != null ? 500 : (serviceStatus >= 400 ? serviceStatus : 200);
-        return mapIntegrationResponse(integration, errorMatchString, responseBodyStr, fallbackStatus,
+        return mapIntegrationResponse(integration, selectionMatchString, responseBodyStr, fallbackStatus,
                 serviceResponseHeaders, responseMappingCtx, MediaType.APPLICATION_JSON);
     }
 
@@ -1929,8 +1929,8 @@ public class ApiGatewayExecuteController {
      * {@code $context.responseOverride} assignments and {@code responseParameters} header mappings.
      *
      * @param selectionMatchString what {@code selectionPattern} regexes are tested against — the
-     *                             error message for {@code AWS}/Lambda integrations, the backend's
-     *                             HTTP status code for {@code HTTP} integrations
+     *                             error type/message for Lambda integrations, the backend's HTTP
+     *                             status code for other {@code AWS} and {@code HTTP} integrations
      * @param fallbackStatus       status used when no integration response is configured or matched
      */
     private Response mapIntegrationResponse(Integration integration, String selectionMatchString,
