@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -65,7 +66,8 @@ class S3CopyObjectDiskTest {
 
     @Test
     void copyOfAMultipartObjectGetsTheMd5OfItsBytesAsItsETag() {
-        byte[] part1 = "first part of the source, ".getBytes(StandardCharsets.UTF_8);
+        byte[] part1 = Arrays.copyOf("first part of the source, ".getBytes(StandardCharsets.UTF_8),
+                (int) S3Service.MIN_MULTIPART_PART_SIZE);
         byte[] part2 = "second part of the source".getBytes(StandardCharsets.UTF_8);
         MultipartUpload upload = s3Service.initiateMultipartUpload("source-bucket", "multipart.bin", null);
         s3Service.uploadPart("source-bucket", "multipart.bin", upload.getUploadId(), 1, part1);
@@ -98,7 +100,8 @@ class S3CopyObjectDiskTest {
 
     @Test
     void copyOfACompositeChecksumObjectGetsAFullObjectChecksumOfItsBytes() {
-        byte[] part1 = "composite part one ".getBytes(StandardCharsets.UTF_8);
+        byte[] part1 = Arrays.copyOf("composite part one ".getBytes(StandardCharsets.UTF_8),
+                (int) S3Service.MIN_MULTIPART_PART_SIZE);
         byte[] part2 = "composite part two".getBytes(StandardCharsets.UTF_8);
         MultipartUpload upload = s3Service.initiateMultipartUpload("source-bucket", "composite.bin", null,
                 null, null, null, null, null, null, null, null, "CRC32");

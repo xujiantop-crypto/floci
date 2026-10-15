@@ -3562,6 +3562,14 @@ public class S3Controller {
                     xmlBuilder.elem(sizeField, size.toString());
                 }
             }
+            if ("EntityTooSmall".equals(e.getErrorCode())) {
+                for (String partField : List.of("PartNumber", "ETag")) {
+                    Object value = e.getExtendedData().get(partField);
+                    if (value != null) {
+                        xmlBuilder.elem(partField, value.toString());
+                    }
+                }
+            }
             Object resource = e.getExtendedData().get("Resource");
             if (resource != null) {
                 xmlBuilder.elem("Resource", resource.toString());

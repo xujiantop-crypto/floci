@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -654,7 +655,8 @@ class S3ServiceTest {
     @Test
     void copyOfMultipartObjectGetsTheEtagOfTheWholeContent() throws NoSuchAlgorithmException {
         s3Service.createBucket("test-bucket", "us-east-1");
-        byte[] part1 = "Part1Data-Hello".getBytes(StandardCharsets.UTF_8);
+        byte[] part1 = Arrays.copyOf("Part1Data-Hello".getBytes(StandardCharsets.UTF_8),
+                (int) S3Service.MIN_MULTIPART_PART_SIZE);
         byte[] part2 = "Part2Data-World".getBytes(StandardCharsets.UTF_8);
         var upload = s3Service.initiateMultipartUpload("test-bucket", "multipart.bin", "application/octet-stream");
         s3Service.uploadPart("test-bucket", "multipart.bin", upload.getUploadId(), 1, part1);

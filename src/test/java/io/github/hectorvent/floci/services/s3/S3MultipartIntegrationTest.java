@@ -25,7 +25,7 @@ class S3MultipartIntegrationTest {
     private static final String SSE_CUSTOMER_KEY_MD5 = customerKeyMd5(SSE_CUSTOMER_KEY);
     private static final String WRONG_SSE_CUSTOMER_KEY = Base64.getEncoder().encodeToString("abcdef0123456789abcdef0123456789".getBytes(StandardCharsets.UTF_8));
     private static final String WRONG_SSE_CUSTOMER_KEY_MD5 = customerKeyMd5(WRONG_SSE_CUSTOMER_KEY);
-    private static final String PART_1 = "Part1Data-Hello";
+    private static final String PART_1 = "P".repeat((int) S3Service.MIN_MULTIPART_PART_SIZE);
     private static final String PART_2 = "Part2Data-World";
     private static final String COMPOSITE_SHA256 = compositeSha256(PART_1, PART_2);
     private static String uploadId;
@@ -258,9 +258,10 @@ class S3MultipartIntegrationTest {
     @Test
     @Order(13)
     void uploadPartCopy() {
-        // Put a source object
+        // The first two copied parts must each be at least 5 MiB.
+        String source = "ABCDEFGHIJ" + "x".repeat((int) S3Service.MIN_MULTIPART_PART_SIZE - 10);
         given()
-            .body("ABCDEFGHIJ")
+            .body(source)
         .when()
             .put("/" + BUCKET + "/source-for-copy.bin")
         .then()
@@ -285,10 +286,10 @@ class S3MultipartIntegrationTest {
             .body(containsString("<ETag>"))
             .extract().xmlPath().getString("CopyPartResult.ETag");
 
-        // UploadPartCopy with range (bytes 2-5 → "CDEF")
+        // UploadPartCopy with an explicit full-sized range.
         String copyPart2ETag = given()
             .header("x-amz-copy-source", "/" + BUCKET + "/source-for-copy.bin")
-            .header("x-amz-copy-source-range", "bytes=2-5")
+            .header("x-amz-copy-source-range", "bytes=0-5242879")
         .when()
             .put("/" + BUCKET + "/copy-dest.bin?uploadId=" + copyUploadId + "&partNumber=2")
         .then()
@@ -325,15 +326,14 @@ class S3MultipartIntegrationTest {
         .then()
             .statusCode(200);
 
-        // Verify contents: full source, ranged slice, then the same slice copied
-        // through the percent-encoded separator. The last four bytes prove the
-        // encoded source resolved to the same object, not just that it returned 200.
+        // Verify full source, explicit range, and the final four-byte range copied
+        // through the percent-encoded separator.
         given()
         .when()
             .get("/" + BUCKET + "/copy-dest.bin")
         .then()
             .statusCode(200)
-            .body(equalTo("ABCDEFGHIJCDEFCDEF"));
+            .body(equalTo(source + source + "CDEF"));
     }
 
     @Test
@@ -1220,7 +1220,7 @@ class S3MultipartIntegrationTest {
         .then().statusCode(200)
             .extract().xmlPath().getString("InitiateMultipartUploadResult.UploadId");
 
-        String firstETag = given().body("first").when()
+        String firstETag = given().body(PART_1).when()
             .put("/" + BUCKET + "/" + key + "?uploadId=" + newUploadId + "&partNumber=1")
         .then().statusCode(200).extract().header("ETag");
         String thirdETag = given().body("third").when()
@@ -1493,6 +1493,41 @@ class S3MultipartIntegrationTest {
 
     @Test
     @Order(40)
+    void completeMultipartUploadRejectsSmallNonFinalPartWithoutDiscardingUpload() {
+        String key = "small-nonfinal-part.bin";
+        given().body("prior").when().put("/" + BUCKET + "/" + key).then().statusCode(200);
+        String newUploadId = given().when().post("/" + BUCKET + "/" + key + "?uploads")
+                .then().statusCode(200).extract().xmlPath().getString("InitiateMultipartUploadResult.UploadId");
+        String firstETag = given().body("tiny").when()
+                .put("/" + BUCKET + "/" + key + "?uploadId=" + newUploadId + "&partNumber=1")
+                .then().statusCode(200).extract().header("ETag");
+        String lastETag = given().body("last").when()
+                .put("/" + BUCKET + "/" + key + "?uploadId=" + newUploadId + "&partNumber=2")
+                .then().statusCode(200).extract().header("ETag");
+        completeMultipart(newUploadId, key, """
+                <CompleteMultipartUpload>
+                    <Part><PartNumber>1</PartNumber><ETag>%s</ETag></Part>
+                    <Part><PartNumber>2</PartNumber><ETag>%s</ETag></Part>
+                </CompleteMultipartUpload>""".formatted(firstETag, lastETag))
+                .statusCode(400)
+                .body(containsString("<Code>EntityTooSmall</Code>"))
+                .body(containsString("<ProposedSize>4</ProposedSize>"))
+                .body(containsString("<MinSizeAllowed>5242880</MinSizeAllowed>"))
+                .body(containsString("<PartNumber>1</PartNumber>"))
+                .body(containsString("<ETag>" + firstETag.replace("\"", "") + "</ETag>"));
+        given().when().get("/" + BUCKET + "/" + key).then().statusCode(200).body(equalTo("prior"));
+        given().when().get("/" + BUCKET + "/" + key + "?uploadId=" + newUploadId)
+                .then().statusCode(200).body(containsString("<PartNumber>2</PartNumber>"));
+        completeMultipart(newUploadId, key, """
+                <CompleteMultipartUpload>
+                    <Part><PartNumber>2</PartNumber><ETag>%s</ETag></Part>
+                </CompleteMultipartUpload>""".formatted(lastETag))
+                .statusCode(200);
+        given().when().get("/" + BUCKET + "/" + key).then().statusCode(200).body(equalTo("last"));
+    }
+
+    @Test
+    @Order(41)
     void cleanUp() {
         given().when().delete("/" + BUCKET + "/copy-of-multipart.bin").then().statusCode(204);
         given().when().delete("/" + BUCKET + "/" + KEY).then().statusCode(204);
@@ -1508,6 +1543,7 @@ class S3MultipartIntegrationTest {
         given().when().delete("/" + BUCKET + "/checksum-match-multipart.bin").then().statusCode(204);
         given().when().delete("/" + BUCKET + "/checksum-type-multipart.bin").then().statusCode(204);
         given().when().delete("/" + BUCKET + "/completion-validation.bin").then().statusCode(204);
+        given().when().delete("/" + BUCKET + "/small-nonfinal-part.bin").then().statusCode(204);
         given().when().delete("/" + BUCKET + "/range-source.bin").then().statusCode(204);
         given().when().delete("/" + BUCKET + "/one-part-multipart.bin").then().statusCode(204);
         given().when().delete("/" + BUCKET + "/one-part-composite.bin").then().statusCode(204);
